@@ -79,7 +79,7 @@ def get_greathorn_events():
         "policyMatched","origin","ip","policyMatchedReasons","policyActions",
         "reason","status","remediation","replyTo","returnPath","source",
         "sourceDomain","spamReport","spf","subject","targets","timestamp",
-        "workflow","messageId","links","headers","files","eventId","dmarc",
+        "workflow","messageId","files","eventId","dmarc",
         "dkim","displayName"
     ]
     filters = [
@@ -169,10 +169,10 @@ def post_data(customer_id, shared_key, body, log_type):
 
     response = requests.post(uri,data=body, headers=headers)
     if (response.status_code >= 200 and response.status_code <= 299):
-        print('Accepted')
+        logging.info('Accepted')
     else:
-        print("Response code: {}".format(response.status_code))
-        print(response.content)
+        logging.error("Response code: {}".format(response.status_code))
+        logging.error(response.content)
 
 
 def main(mytimer: func.TimerRequest) -> None:
