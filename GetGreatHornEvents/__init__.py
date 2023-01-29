@@ -14,14 +14,15 @@ GREATHORN_URL = "https://api.greathorn.com/"
 GREATHORN_API_TOKEN = os.environ['gh_api_token']
 customer_id = os.environ['workspace_id'] 
 shared_key = os.environ['workspace_key']
-policy_table_name = "GreatHornPolicyTEST"
-audit_table_name = "GreatHornAuditTEST"
+policy_table_name = "GreatHornPolicy"
+audit_table_name = "GreatHornAudit"
 
 
 def send_get(url, headers, params):
     """ sends a POST request to the defined endpoint """
     try:
         res = requests.get(url, headers=headers, params=params)
+        logging.info(res.status_code)
 
         return res
     except Exception as err:
@@ -32,6 +33,7 @@ def send_post(url, headers, json_data):
     """ sends a POST request to the defined endpoint """
     try:
         res = requests.post(url, headers=headers, json=json_data)
+        logging.info(res.status_code)
 
         return res
     except Exception as err:
@@ -84,7 +86,7 @@ def get_greathorn_events():
     ]
     filters = [
         {
-            "status": [ "policy"], 
+            "status": ["policy"], 
             "startDate": start_date_iso, 
             "endDate": end_date_iso}
     ]
