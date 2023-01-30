@@ -226,8 +226,8 @@
                 "FUNCTIONS_EXTENSION_VERSION": "~4",
                 "gh_api_token": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', split(format('{0}/greathornApiToken', variables('keyVaultName')), '/')[0], split(format('{0}/greathornApiToken', variables('keyVaultName')), '/')[1])).secretUri)]",
                 "KVName": "[variables('keyVaultName')]",
-                "WorkspaceID": "[parameters('logAnalyticsWorkspaceID')]",
-                "WorkspaceKey": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', split(format('{0}/workspaceKey', variables('keyVaultName')), '/')[0], split(format('{0}/workspaceKey', variables('keyVaultName')), '/')[1])).secretUri)]",
+                "workspace_id": "[parameters('logAnalyticsWorkspaceID')]",
+                "workspace_key": "[format('@Microsoft.KeyVault(SecretUri={0})', reference(resourceId('Microsoft.KeyVault/vaults/secrets', split(format('{0}/workspaceKey', variables('keyVaultName')), '/')[0], split(format('{0}/workspaceKey', variables('keyVaultName')), '/')[1])).secretUri)]",
                 "WEBSITE_RUN_FROM_PACKAGE": "https://github.com/h0ffayyy/MicrosoftSentinel-GreatHorn/raw/master/MicrosoftSentinel-GreatHorn.zip"
             },
             "dependsOn": [
