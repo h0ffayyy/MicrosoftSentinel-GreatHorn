@@ -9,64 +9,115 @@ import os
 import azure.functions as func
 import requests
 
-from .state_manager import StateManager
+from .state_manager import BlobStateManager
 
 
-GREATHORN_URL = "https://api.greathorn.com/"
-GREATHORN_API_TOKEN = os.environ['gh_api_token']
-connection_string = os.environ['AzureWebJobsStorage']
-customer_id = os.environ['workspace_id']
-shared_key = os.environ['workspace_key']
-policy_table_name = "GreatHornPolicy"
-audit_table_name = "GreatHornAudit"
-chunksize = 2000
+class Config:
+    def __init__(self):
+        self.greathorn_url = "https://api.greathorn.com/"
+        self.api_token = os.environ['gh_api_token']
+        self.connection_string = os.environ['AzureWebJobsStorage']
+        self.customer_id = os.environ['workspace_id']
+        self.shared_key = os.environ['workspace_key']
+        self.policy_table_name = "GreatHornPolicy"
+        self.audit_table_name = "GreatHornAudit"
+        self.chunk_size = 2000
+        self.api_timeout = 30
+        self.max_retries = 3
+
+config = Config()
+
+
+def validate_environment():
+    """Validate all required environment variables are present"""
+    required_vars = [
+        'gh_api_token', 'AzureWebJobsStorage', 
+        'workspace_id', 'workspace_key'
+    ]
+    missing = [var for var in required_vars if not os.environ.get(var)]
+    if missing:
+        raise ValueError(f"Missing required environment variables: {missing}")
 
 
 def send_get(url, headers, params):
     """ sends a GET request to the defined endpoint """
     try:
-        res = requests.get(url, headers=headers, params=params)
-
+        res = requests.get(url, headers=headers, params=params, timeout=30)
+        res.raise_for_status()  # Raise an exception for bad status codes
         return res
+    except requests.exceptions.RequestException as err:
+        logging.error(f"GET request failed: {err}")
+        raise
     except Exception as err:
-        logging.error(err)
+        logging.error(f"Unexpected error in GET request: {err}")
+        raise
 
 
 def send_post(url, headers, json_data):
     """ sends a POST request to the defined endpoint """
     try:
-        res = requests.post(url, headers=headers, json=json_data)
-
+        res = requests.post(url, headers=headers, json=json_data, timeout=30)
+        res.raise_for_status()  # Raise an exception for bad status codes
         return res
+    except requests.exceptions.RequestException as err:
+        logging.error(f"POST request failed: {err}")
+        raise
     except Exception as err:
-        logging.error(err)
+        logging.error(f"Unexpected error in POST request: {err}")
+        raise
 
 
 def generate_date():
-    """ generate date range for API call """
-    current_time = datetime.datetime.utcnow() - datetime.timedelta(minutes=5)
-    state = StateManager(connection_string)
-    past_time = state.get()
-    if past_time is not None:
-        logging.info("The last time point is: {}".format(past_time))
-    else:
-        logging.info("There is no last time point, trying to get events for last day.")
+    """Generate date range with better error handling
+    
+    Returns:
+        tuple: A tuple containing the past time and current time
+    """
+    current_time = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+    state = BlobStateManager(config.connection_string)
+    
+    try:
+        past_time = state.get()
+        if past_time:
+            logging.info(f"Last checkpoint: {past_time}")
+            # Validate the timestamp isn't too old (prevent huge data pulls)
+            past_dt = datetime.datetime.fromisoformat(past_time.replace('Z', '+00:00'))
+            # Ensure both datetimes are timezone-aware for proper comparison
+            if (current_time - past_dt).days > 7:
+                logging.warning("Last checkpoint is over 7 days old, limiting to 24 hours")
+                past_time = (current_time - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            else:
+                # Use the retrieved timestamp as-is since it's valid and recent
+                logging.info(f"Using checkpoint timestamp: {past_time}")
+        else:
+            logging.info("No previous checkpoint, fetching last 24 hours")
+            past_time = (current_time - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    except Exception as e:
+        logging.error(f"Error retrieving state: {e}")
         past_time = (current_time - datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    state.post(current_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
-    return (past_time, current_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
+    
+    current_time_str = current_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    state.post(current_time_str)
+    
+    return past_time, current_time_str
 
 
 def get_greathorn_audit(start_time, end_time):
-    """ use the audit API to get the GreatHorn audit log """
+    """ use the audit API to get the GreatHorn audit log
+    
+    Args:
+        start_time (str): The start time of the audit log
+        end_time (str): The end time of the audit log
+    """
     audit_endpoint = "v2/administration/audit"
     headers = {
-        "Authorization": f"Bearer {GREATHORN_API_TOKEN}",
+        "Authorization": f"Bearer {config.api_token}",
         "Accept": "application/json"
     }
     params = {'startDate': start_time, 'endDate': end_time}
 
     logging.info(f"Getting audit logs from GreatHorn from {start_time} to {end_time}...")
-    results = send_get(f"{GREATHORN_URL}{audit_endpoint}", headers, params)
+    results = send_get(f"{config.greathorn_url}{audit_endpoint}", headers, params)
 
     json_results = results.json()
     total_results = json_results['result']['total']
@@ -74,14 +125,19 @@ def get_greathorn_audit(start_time, end_time):
     logging.info(f"Found {total_results} new audit log events")
 
     if total_results > 0:
-        gen_chunks(events_list, audit_table_name)
+        gen_chunks(events_list, config.audit_table_name)
 
 
 def get_greathorn_events(start_time, end_time):
-    """ use the search events API to get latest policy violations """
+    """ use the search events API to get latest policy violations
+    
+    Args:
+        start_time (str): The start time of the audit log
+        end_time (str): The end time of the audit log
+    """
     events_endpoint = "v2/search/events"
     headers = {
-        "Authorization": f"Bearer {GREATHORN_API_TOKEN}",
+        "Authorization": f"Bearer {config.api_token}",
         "Accept": "application/json"
     }
     fields = [
@@ -109,7 +165,7 @@ def get_greathorn_events(start_time, end_time):
     logging.info(f"Getting policy match events from GreatHorn from {start_time} to {end_time}...")
 
     post_results = send_post(
-        f"{GREATHORN_URL}{events_endpoint}", headers, json_data
+        f"{config.greathorn_url}{events_endpoint}", headers, json_data
     )
     json_results = post_results.json()
     result_count = len(json_results['results'])
@@ -126,7 +182,7 @@ def get_greathorn_events(start_time, end_time):
             logging.info("Getting results from next offset...")
             json_data['offset'] = offset
             post_results = send_post(
-                f"{GREATHORN_URL}{events_endpoint}", headers, json_data
+                f"{config.greathorn_url}{events_endpoint}", headers, json_data
             )
             json_results = post_results.json()
             result_count = len(json_results['results'])
@@ -144,10 +200,16 @@ def get_greathorn_events(start_time, end_time):
             event['links'] = new_links
 
     if total_results > 0:
-        gen_chunks(events_list, policy_table_name)
+        gen_chunks(events_list, config.policy_table_name)
 
 
 def gen_chunks_to_object(data, chunk_size=100):
+    """Generate chunks of data
+    
+    Args:
+        data (list): The data to process
+        chunk_size (int): The size of the chunks to generate, default is 100
+    """
     chunk = []
     for index, line in enumerate(data):
         if index % chunk_size == 0 and index > 0:
@@ -158,8 +220,14 @@ def gen_chunks_to_object(data, chunk_size=100):
 
 
 def gen_chunks(data, table_name):
+    """Generate chunks of data and send to the Azure Log Analytics API
+    
+    Args:
+        data (list): The data to process
+        table_name (str): The name of the table to send the data to, either "GreatHornPolicy" or "GreatHornAudit"
+    """
     counter = 1
-    for chunk in gen_chunks_to_object(data, chunk_size=chunksize):
+    for chunk in gen_chunks_to_object(data, chunk_size=config.chunk_size):
         logging.info(f"Sending chunk {counter}...")
         post_data(chunk, table_name)
         counter += 1
@@ -184,18 +252,24 @@ def build_signature(customer_id, shared_key, date, content_length, method,
 
 # Build and send a request to the POST API
 def post_data(chunk, log_type):
+    """Post data to the Azure Log Analytics API
+    
+    Args:
+        chunk (list): The data to send
+        log_type (str): The type of log to send, either "GreatHornPolicy" or "GreatHornAudit"
+    """
     body = json.dumps(chunk)
     method = 'POST'
     content_type = 'application/json'
     resource = '/api/logs'
-    rfc1123date = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    rfc1123date = datetime.datetime.now(datetime.timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
     content_length = len(body)
     signature = build_signature(
-        customer_id, shared_key, rfc1123date, content_length, method,
+        config.customer_id, config.shared_key, rfc1123date, content_length, method,
         content_type, resource
     )
     uri = (
-        'https://' + customer_id + '.ods.opinsights.azure.com' + resource +
+        'https://' + config.customer_id + '.ods.opinsights.azure.com' + resource +
         '?api-version=2016-04-01'
     )
 
@@ -222,8 +296,22 @@ def post_data(chunk, log_type):
         logging.error(f"Something wrong. Exception error text: {err}")
 
 
+def process_in_chunks(data, table_name, chunk_size=2000):
+    """Process data in chunks and send directly
+    
+    Args:
+        data (list): The data to process
+        table_name (str): The name of the table to send the data to, either "GreatHornPolicy" or "GreatHornAudit"
+        chunk_size (int): The size of the chunks to send
+    """
+    for i in range(0, len(data), chunk_size):
+        chunk = data[i:i + chunk_size]
+        logging.info(f"Sending chunk {(i // chunk_size) + 1}...")
+        post_data(chunk, table_name)
+
+
 def main(mytimer: func.TimerRequest) -> None:
-    utc_timestamp = datetime.datetime.utcnow().replace(
+    utc_timestamp = datetime.datetime.now(datetime.timezone.utc).replace(
         tzinfo=datetime.timezone.utc).isoformat()
 
     if mytimer.past_due:
@@ -232,5 +320,9 @@ def main(mytimer: func.TimerRequest) -> None:
     logging.info('Python timer trigger function ran at %s', utc_timestamp)
 
     start_time, end_time = generate_date()
+    
     get_greathorn_events(start_time, end_time)
     get_greathorn_audit(start_time, end_time)
+
+# Call at module level
+validate_environment()

@@ -3,7 +3,7 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
-azure-storage-fileshare
+azure-storage-blob
 certifi==2025.4.26
 charset-normalizer==3.4.2
 idna==3.10
